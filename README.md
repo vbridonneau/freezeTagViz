@@ -13,7 +13,7 @@ Le Freeze Tag Problem consiste à réveiller $n$ robots endormis à partir d'un 
 **Conjecture ouverte (Bonichon, Gavoille, Hanusse, Odak — CCCG 2024) :**
 Pour tout $n \geq 1$ et toute configuration de $n$ robots dans le disque unité, il existe une stratégie de réveil de makespan au plus $1 + 2\sqrt{2} \approx 3.828$ atteinte dans le cas $n=4$.
 
-L'objectif de ce petit projet est de proposé un outil pour explorer la conjecture et de testé différentes hyppothèses via une interface graphique. La fonctionnalité principale de cette interface est de permettre de visualiser une solution optimale affichée sous la forme d'un arbre de réveil possible (solution exacte).
+L'objectif de ce projet est de proposé un outil pour explorer la conjecture et de testé différentes hyppothèses via une interface graphique. La fonctionnalité principale de cette interface est de permettre de visualiser une solution optimale affichée sous la forme d'un arbre de réveil possible (solution exacte).
 
 ---
 
@@ -36,7 +36,7 @@ Ce petit outil propose plusieurs fonctionnalités dans le but d'explorer graphiq
 - Perturbation gaussienne à décroissance adaptative
 - Recherche locale du pire makespan pour $n$ fixé
 
-### Champ gravitationnel (bouton 🌌)
+### Champ gravitationnel
 - Visualisation 3D interactive du champ de potentiel induit par les robots
 - Chaque robot exerce une "masse" gaussienne (rayon d'action $\sigma$, réglable)
 - Calcul et affichage du **gradient en l'origine** $\nabla\varphi(0,0)$ — direction naturelle du premier réveil
@@ -55,7 +55,6 @@ Ce petit outil propose plusieurs fonctionnalités dans le but d'explorer graphiq
 | Accélération JIT | Numba (`@njit`, LLVM) |
 | Parallélisation | `multiprocessing.Pool` |
 | Algorithme exact | DP bitmask bottom-up ($O(3^n \cdot n)$) |
-| Algorithme approché | Greedy heap (pour $n > 10$) |
 
 ---
 
@@ -65,7 +64,7 @@ Ce petit outil propose plusieurs fonctionnalités dans le but d'explorer graphiq
 git clone <url-du-repo>
 cd freeze-tag-viz
 pip install -r requirements.txt
-python freeze_tag_viz.py
+python main.py
 ```
 
 Numba est optionnel mais fortement recommandé : il compile la DP bitmask en code machine via LLVM, apportant un gain d'environ ×15 sur le calcul du makespan exact (mesuré sur n=8 à 10).
