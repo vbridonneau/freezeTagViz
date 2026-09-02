@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+.env
+
+# Numba cache
+__pycache__/
+.numba_cache/
+
+# Sorties du visualiseur
+output/
+*.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Jupyter (si utilisé pour exploration)
+.ipynb_checkpoints/
+*.ipynb
