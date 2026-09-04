@@ -1,6 +1,6 @@
 # ── Utilitaires ────────────────────────────────────────────────────────────────
 import math
-from typing import Tuple
+from typing import List, Tuple
 
 import numpy as np
 
@@ -17,7 +17,6 @@ def dist(a : Tuple[float], b : Tuple[float]) -> float:
     """
     return math.hypot(a[0]-b[0], a[1]-b[1])
 
-
 def random_in_disk() -> np.ndarray:
     """Tire un point uniformément au hasard dans le disque unité ouvert.
 
@@ -29,8 +28,9 @@ def random_in_disk() -> np.ndarray:
         Tableau numpy de forme (2,) contenant les coordonnées (x, y)
         du point tiré, avec x^2 + y^2 < 1.
     """
-    r     = math.sqrt(np.random.uniform(0, 1))
-    theta = np.random.uniform(0, 2 * math.pi)
+    local_state = np.random.RandomState(None) # Au cas où le parallélisme est authorisé
+    r           = math.sqrt(local_state.uniform(0, 1))
+    theta       = local_state.uniform(0, 2 * math.pi)
     return np.array([r * math.cos(theta), r * math.sin(theta)])
 
 
@@ -130,7 +130,7 @@ try:
         return float(_dp_bitmask(n, dm))
 
     # Pré-compiler pour n=4 au démarrage (évite la latence au 1er vrai appel)
-    def _warmup_numba():
+    def warmup_numba():
         pts = [(math.cos(2*math.pi*i/4), math.sin(2*math.pi*i/4)) for i in range(4)]
         makespan_exact((0.,0.), pts)
 
@@ -138,6 +138,9 @@ try:
     print("[freeze_tag] Numba détecté — DP JIT activée (×15 speedup)")
 
 except ImportError:
+    def _dp_bitmask(n, dist_mat):
+        pass
+
     # Fallback lru_cache si numba absent
     def makespan_exact(origin, robots):
         from functools import lru_cache
@@ -214,6 +217,92 @@ except ImportError:
         one.cache_clear(); two.cache_clear()
         return ms
 
-    def _warmup_numba(): pass
+    def warmup_numba(): pass
     _NUMBA_OK = False
     print("[freeze_tag] Numba absent — fallback lru_cache")
+
+def compute_makespan(origin : Tuple[float], robots : List[Tuple[float]]) -> float:
+    """Calcule le makespan optimal ou approche selon la taille de l'instance.
+
+    Dispatch automatique : DP bitmask exacte dont la complexité est en O(3^n * n).
+
+    Args:
+        origin: Position du robot initialement eveille, sous la forme (x, y)
+                ou np.ndarray de forme (2,).
+        robots: Liste des positions (x, y) des robots endormis.
+
+    Returns:
+        Makespan en unite de distance (temps = distance car vitesse = 1).
+        Vaut 0.0 si la liste de robots est vide.
+    """
+    n = len(robots)
+    if n == 0: return 0.0
+    return (makespan_exact(tuple(origin), tuple(map(tuple, robots))))
+ 
+class FreezeTagInstance:
+    def __init__(self, origin : Tuple[float], robots : List[Tuple[float]]):
+        self._wakeup_tree = []
+        self._ms          = 0.0
+        self.origin       = origin
+        self.robots       = robots
+
+    def build(self) -> None:
+        """Construit les aretes de l'arbre de reveil optimal et calcul le makespan optimal
+
+        La liste des aretes de l'arbre de reveil est construite sous forme de paires
+        de points, utilisee pour l'affichage de la strategie optimale dans la
+        fenetre principale.
+
+        Args:
+            origin: Position du robot initialement eveille, sous la forme (x, y)
+                    ou np.ndarray de forme (2,).
+            robots: Liste des positions (x, y) des robots endormis.
+
+        Returns:
+            Liste de paires ((x1, y1), (x2, y2)) representant chaque arete
+            de l'arbre de reveil. Liste vide si robots est vide.
+        """
+        n = len(self.robots)
+        if n == 0: return []
+        from functools import lru_cache
+        pts = list(map(tuple, self.robots))
+
+        @lru_cache(maxsize=None)
+        def one(mask, pos):
+            if mask == 0: return 0.0, []
+            best, be = float('inf'), []
+            for i in range(n):
+                if not (mask >> i & 1): continue
+                r = pts[i]; rest = mask ^ (1<<i)
+                cs, es = two(rest, r, r)
+                c = dist(pos, r) + cs
+                if c < best: best, be = c, [(pos, r)] + es
+            return best, be
+
+        @lru_cache(maxsize=None)
+        def two(mask, p1, p2):
+            if mask == 0: return 0.0, []
+            best, be = float('inf'), []
+            for t in range(mask+1):
+                if (t & mask) != t: continue
+                c1, e1 = one(t, p1); c2, e2 = one(mask^t, p2)
+                c = max(c1, c2)
+                if c < best: best, be = c, e1+e2
+            return best, be
+
+        self._ms, self._wakeup_tree = one((1<<n)-1, tuple(self.origin))
+        one.cache_clear(); two.cache_clear()
+
+    def getMs(self):
+        return self._ms
+
+    def getWakeTree(self):
+        return self._wakeup_tree
+
+def solve(origin : Tuple[float], robots : List[Tuple[float]]) -> tuple[float, List[List[Tuple[float]]]]:
+    instance = FreezeTagInstance(origin, robots)
+    instance.build()
+    return instance.getMs(), instance.getWakeTree()
+
+def wake_tree(origin : Tuple[float], robots : List[Tuple[float]]) -> List[List[Tuple[float]]]:
+    return solve(origin, robots)[1]

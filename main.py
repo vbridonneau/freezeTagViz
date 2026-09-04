@@ -13,77 +13,11 @@ from matplotlib.widgets import Button, TextBox
 import math, os, csv
 from typing import *
 
-from freeze_tag import dist, random_in_disk, clamp_disk, makespan_exact, _warmup_numba, _NUMBA_OK
+from freeze_tag import dist, random_in_disk, clamp_disk, warmup_numba, _NUMBA_OK
+from freeze_tag import compute_makespan, wake_tree, makespan_exact
 
 # ── Constante cible ────────────────────────────────────────────────────────────
 TARGET = 1 + 2 * math.sqrt(2)   # ≈ 3.8284
-
-def compute_makespan(origin, robots):
-    """Calcule le makespan optimal ou approche selon la taille de l'instance.
- 
-    Dispatch automatique : DP bitmask exacte dont la complexité est en O(3^n * n).
- 
-    Args:
-        origin: Position du robot initialement eveille, sous la forme (x, y)
-                ou np.ndarray de forme (2,).
-        robots: Liste des positions (x, y) des robots endormis.
- 
-    Returns:
-        Makespan en unite de distance (temps = distance car vitesse = 1).
-        Vaut 0.0 si la liste de robots est vide.
-    """
-    n = len(robots)
-    if n == 0: return 0.0
-    return (makespan_exact(tuple(origin), tuple(map(tuple, robots))))
-
-# ── Arbre de réveil pour affichage ────────────────────────────────────────────
-def get_wake_tree(origin : Tuple[float], robots : List[Tuple[float]]) -> List[Tuple[Tuple[float]]]:
-    """Reconstitue les aretes de l'arbre de reveil optimal.
- 
-    Retourne la liste des aretes de l'arbre de reveil sous forme de paires
-    de points, utilisee pour l'affichage de la strategie optimale dans la
-    fenetre principale.
- 
-    Args:
-        origin: Position du robot initialement eveille, sous la forme (x, y)
-                ou np.ndarray de forme (2,).
-        robots: Liste des positions (x, y) des robots endormis.
- 
-    Returns:
-        Liste de paires ((x1, y1), (x2, y2)) representant chaque arete
-        de l'arbre de reveil. Liste vide si robots est vide.
-    """
-    n = len(robots)
-    if n == 0: return []
-    from functools import lru_cache
-    pts = list(map(tuple, robots))
-
-    @lru_cache(maxsize=None)
-    def one(mask, pos):
-        if mask == 0: return 0.0, []
-        best, be = float('inf'), []
-        for i in range(n):
-            if not (mask >> i & 1): continue
-            r = pts[i]; rest = mask ^ (1<<i)
-            cs, es = two(rest, r, r)
-            c = dist(pos, r) + cs
-            if c < best: best, be = c, [(pos, r)] + es
-        return best, be
-
-    @lru_cache(maxsize=None)
-    def two(mask, p1, p2):
-        if mask == 0: return 0.0, []
-        best, be = float('inf'), []
-        for t in range(mask+1):
-            if (t & mask) != t: continue
-            c1, e1 = one(t, p1); c2, e2 = one(mask^t, p2)
-            c = max(c1, c2)
-            if c < best: best, be = c, e1+e2
-        return best, be
-
-    _, edges = one((1<<n)-1, tuple(origin))
-    one.cache_clear(); two.cache_clear()
-    return edges
 
 # ── Worker multiprocessing (doit être top-level pour être picklable) ──────────
 import multiprocessing as _mp
@@ -92,84 +26,11 @@ N_WORKERS = max(1, _mp.cpu_count())
 def _sim_worker(args):
     """Évalue 'batch' configurations aléatoires et retourne la pire."""
     n, origin_xy, batch = args
-    import math, numpy as np
-    ox, oy = origin_xy
-
-    _dist           = dist           # alias -> picklable car pointe vers top-level
-    _random_in_disk = random_in_disk # idem
-
-    # Choisir le moteur de calcul exact
-    try:
-        from numba import njit as _njit
-
-        @_njit
-        def _dp(n, dm):
-            INF = 1e18; total = 1 << n
-            one = np.full((total, n+1), INF)
-            two = np.full((total, n+1, n+1), INF)
-            for p in range(n+1):
-                one[0,p] = 0.
-                for q in range(n+1): two[0,p,q] = 0.
-            for mask in range(1, total):
-                for pos in range(n+1):
-                    best = INF
-                    for i in range(n):
-                        if not (mask>>i&1): continue
-                        c = dm[pos,i] + two[mask^(1<<i), i, i]
-                        if c < best: best = c
-                    one[mask,pos] = best
-                for p1 in range(n+1):
-                    for p2 in range(n+1):
-                        best = INF; t = mask
-                        while True:
-                            v1=one[t,p1]; v2=one[mask^t,p2]
-                            c=v1 if v1>v2 else v2
-                            if c<best: best=c
-                            if t==0: break
-                            t=(t-1)&mask
-                        two[mask,p1,p2]=best
-            return one[total-1, n]
-
-        def _exact(cfg):
-            pts = list(cfg) + [(ox, oy)]
-            dm  = np.zeros((n+1, n+1))
-            for i in range(n+1):
-                for j in range(n+1):
-                    dm[i,j] = math.hypot(pts[i][0]-pts[j][0], pts[i][1]-pts[j][1])
-            return float(_dp(n, dm))
-
-        # Warmup JIT dans ce process
-        _exact(tuple(_random_in_disk() for _ in range(n)))
-
-    except ImportError:
-        from functools import lru_cache
-        def _exact(cfg):
-            pts = list(cfg)
-            @lru_cache(maxsize=None)
-            def one(mask, pos):
-                if mask==0: return 0.
-                best=float('inf')
-                for i in range(n):
-                    if not(mask>>i&1): continue
-                    c=_dist(pos,pts[i])+two(mask^(1<<i),pts[i],pts[i])
-                    if c<best: best=c
-                return best
-            @lru_cache(maxsize=None)
-            def two(mask,p1,p2):
-                if mask==0: return 0.
-                best=float('inf')
-                for t in range(mask+1):
-                    if(t&mask)!=t: continue
-                    c=max(one(t,p1),one(mask^t,p2))
-                    if c<best: best=c
-                return best
-            ms=one((1<<n)-1,(ox,oy)); one.cache_clear(); two.cache_clear()
-            return ms
 
     best_ms = -1.; best_cfg = None
     for _ in range(batch):
-        cfg = tuple(_random_in_disk() for _ in range(n))
-        ms  = _exact(cfg)
+        cfg = tuple(random_in_disk() for _ in range(n))
+        ms  = makespan_exact(origin_xy, cfg)
         if ms > best_ms: best_ms = ms; best_cfg = cfg
     return best_ms, best_cfg
 
@@ -448,7 +309,7 @@ class FreezeTagViz:
 
         # Arbre de réveil
         if self.robots:
-            for (p1,p2) in get_wake_tree(self.ORIGIN, self.robots):
+            for (p1,p2) in wake_tree(self.ORIGIN, self.robots):
                 ax.plot([p1[0],p2[0]], [p1[1],p2[1]],
                         color="#33dd99", linewidth=1.0, alpha=0.45, zorder=3)
 
@@ -595,14 +456,14 @@ class FreezeTagViz:
             event: Evenement matplotlib (non utilise, requis par l'API Button).
         """
         n = len(self.robots)
-        if n == 0: self._warn("⚠ Ajoutez des robots avant de simuler"); return
+        if n == 0: self._warn("Ajoutez des robots avant de simuler"); return
         nb = self._read_n()
         if nb is None: return
 
         origin_xy = (float(self.ORIGIN[0]), float(self.ORIGIN[1]))
 
         # Seuil : paralléliser seulement si nb assez grand (amortir l'overhead Pool)
-        MIN_PAR = 500
+        MIN_PAR = 300
         use_par = (N_WORKERS > 1) and (nb >= MIN_PAR)
 
         if use_par:
@@ -673,6 +534,29 @@ class FreezeTagViz:
         cur_ms  = compute_makespan(self.ORIGIN, cur_cfg)
         best_ms, best_cfg = cur_ms, [r.copy() for r in cur_cfg]
         sigma   = 0.08      # amplitude perturbation initiale
+
+        MIN_PAR = 300
+        use_par = (N_WORKERS > 1) and (nb >= MIN_PAR)
+        
+        if use_par:
+            n_workers  = N_WORKERS
+            batch_size = max(100, nb // n_workers)
+            batches    = [batch_size] * (n_workers - 1)
+            batches.append(nb - batch_size * (n_workers - 1))
+            args = [(n, origin_xy, b) for b in batches]
+
+            self.hint_txt.set_text(
+                f"Simulation… {nb} tirages sur {n_workers} cœurs")
+            self.hint_txt.set_color("#ffcc44")
+            self.fig.canvas.draw_idle(); self.fig.canvas.flush_events()
+
+            with _mp.Pool(n_workers) as pool:
+                results = pool.map(_sim_worker, args)
+
+            best_ms, best_cfg_raw = max(results, key=lambda x: x[0])
+            best_cfg = [np.array(list(r)) for r in best_cfg_raw]
+            label = f"Simulation ({n_workers} cœurs)"
+        
 
         for i in range(nb):
             cand = []
@@ -1089,7 +973,7 @@ if __name__ == "__main__":
     _mp.freeze_support()   # indispensable sur Windows avec multiprocessing
     if _NUMBA_OK:
         print("[freeze_tag] Compilation JIT Numba en cours...")
-        _warmup_numba()
+        warmup_numba()
         print("[freeze_tag] JIT prêt.")
     print(f"Freeze Tag Visualiseur  |  cible 1+2√2 ≈ {TARGET:.6f}")
     print(f"  {N_WORKERS} cœurs  |  Numba={'OUI (×15)' if _NUMBA_OK else 'NON (fallback lru_cache)'}")
