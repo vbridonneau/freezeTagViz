@@ -2,10 +2,6 @@
 
 Outil de visualisation et d'exploration heuristique du **Freeze Tag Problem (FTP)** dans le disque unité euclidien.
 
-> Ce projet a été développé avec l'assistance de l'IA [Claude](https://claude.ai) (Anthropic).
-
----
-
 ## Le problème
 
 Le Freeze Tag Problem consiste à réveiller $n$ robots endormis à partir d'un unique robot actif, en minimisant le **makespan** défini comme le temps qu'il faut pour que tous les robots soient réveillés. Les robots se déplacent à vitesse 1 et réveillent un robot endormi en le touchant. Dès qu'un robot est réveillé, il devient lui-même actif et peut en réveiller d'autres rendant le problème intrinsèquement **distribué**.
@@ -77,15 +73,15 @@ Sans Numba, le script bascule automatiquement sur un fallback `lru_cache`.
 
 **Ajouter des robots** : pour ajouter un robot, il suffit de cliquer sur `+ Robot` puis cliquer dans le disque.
  
-**Obtenir un configuration aléatoires** : il suffit d'utiliser le boutton `⚄ Aléatoire` pour que les robots présents soient bougés aléatoirements.
+**Obtenir un configuration aléatoires** : il suffit d'utiliser le boutton `Aléatoire` pour que les robots présents soient bougés aléatoirements.
 
 **Déplacer un robot** : cliquer-glisser directement dans le disque.
 
-**Lancer une simulation** : sélectionner `Simulation` dans le menu, régler $N$ (nombre de configurations à tester), cliquer `▶ Simuler`.
+**Lancer une simulation** : sélectionner `Simulation` dans le menu, régler $N$ (nombre de configurations à tester), cliquer `Simuler`.
 
-**Explorer** : sélectionner `Exploration`, régler le nombre d'itérations de hill-climbing, cliquer `▶ Explorer`.
+**Explorer** : sélectionner `Exploration`, régler le nombre d'itérations de hill-climbing, cliquer `Explorer`.
 
-**Visualiser le champ** : cliquer 🌌 (coin haut droit du disque) — une fenêtre 3D s'ouvre, le slider $\sigma$ est interactif.
+**Visualiser le champ** : cliquer dans coin haut droit du disque pour qu'une une fenêtre 3D s'ouvre, le slider $\sigma$ est interactif.
 
 ---
 

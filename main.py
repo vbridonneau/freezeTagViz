@@ -613,7 +613,7 @@ class FreezeTagViz:
             args = [(n, origin_xy, b) for b in batches]
 
             self.hint_txt.set_text(
-                f"⏳ Simulation… {nb} tirages sur {n_workers} cœurs")
+                f"Simulation… {nb} tirages sur {n_workers} cœurs")
             self.hint_txt.set_color("#ffcc44")
             self.fig.canvas.draw_idle(); self.fig.canvas.flush_events()
 
@@ -622,7 +622,7 @@ class FreezeTagViz:
 
             best_ms, best_cfg_raw = max(results, key=lambda x: x[0])
             best_cfg = [np.array(list(r)) for r in best_cfg_raw]
-            label = f"✓ Simulation ({n_workers} cœurs)"
+            label = f"Simulation ({n_workers} cœurs)"
 
         else:
             # Séquentiel (nb petit ou 1 seul cœur)
@@ -633,10 +633,10 @@ class FreezeTagViz:
                 if ms > best_ms: best_ms, best_cfg = ms, [c.copy() for c in cfg]
                 if (i+1) % 50 == 0 or i == nb-1:
                     self.hint_txt.set_text(
-                        f"⏳ Simulation… {i+1}/{nb}  best={best_ms:.4f}")
+                        f"Simulation… {i+1}/{nb}  best={best_ms:.4f}")
                     self.hint_txt.set_color("#ffcc44")
                     self.fig.canvas.draw_idle(); self.fig.canvas.flush_events()
-            label = "✓ Simulation (séquentiel)"
+            label = "Simulation (séquentiel)"
 
         self._sim_best_ms     = best_ms
         self._sim_best_robots = best_cfg
@@ -665,7 +665,7 @@ class FreezeTagViz:
             event: Evenement matplotlib (non utilise, requis par l'API Button).
         """
         n = len(self.robots)
-        if n==0: self._warn("⚠ Placez des robots pour démarrer l'exploration"); return
+        if n==0: self._warn("Placez des robots pour démarrer l'exploration"); return
         nb = self._read_n()
         if nb is None: return
 
@@ -690,7 +690,7 @@ class FreezeTagViz:
             sigma = max(0.008, sigma * 0.9998)
             if (i+1)%100==0 or i==nb-1:
                 self.hint_txt.set_text(
-                    f"⏳ Exploration… {i+1}/{nb}  best={best_ms:.4f}  σ={sigma:.4f}")
+                    f"Exploration… {i+1}/{nb}  best={best_ms:.4f}  σ={sigma:.4f}")
                 self.hint_txt.set_color("#ffcc44")
                 self.fig.canvas.draw_idle(); self.fig.canvas.flush_events()
 
@@ -699,7 +699,7 @@ class FreezeTagViz:
         self.robots           = [c.copy() for c in best_cfg]
         fname = export_csv(best_cfg, best_ms, "exploration", n)
         self.hint_txt.set_text(
-            f"✓ Exploration — worst={best_ms:.4f}  →  output/{fname}")
+            f"Exploration — worst={best_ms:.4f}  →  output/{fname}")
         self.hint_txt.set_color("#44ddaa")
         self._redraw()
 
