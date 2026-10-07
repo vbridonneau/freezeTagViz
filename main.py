@@ -6,15 +6,26 @@ Modes (menu déroulant) :
   • Exploration : part de la config courante, perturbe localement (hill-climbing)
 CSV exportés dans ./output/
 """
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Button, TextBox
-import math, os, csv
+import csv
+import math
+import os
 from typing import *
 
-from freeze_tag import dist, random_in_disk, clamp_disk, warmup_numba, _NUMBA_OK
-from freeze_tag import compute_makespan, wake_tree, makespan_exact
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.widgets import Button, TextBox
+
+from features import HeatMapUIFeature, HeatMapCursor, heat_map_from_robots
+from freeze_tag import (
+    _NUMBA_OK,
+    clamp_disk,
+    compute_makespan,
+    dist,
+    makespan_exact,
+    random_in_disk,
+    wake_tree,
+    warmup_numba,
+)
 
 # ── Constante cible ────────────────────────────────────────────────────────────
 TARGET = 1 + 2 * math.sqrt(2)   # ≈ 3.8284
@@ -22,6 +33,23 @@ TARGET = 1 + 2 * math.sqrt(2)   # ≈ 3.8284
 # ── Worker multiprocessing (doit être top-level pour être picklable) ──────────
 import multiprocessing as _mp
 N_WORKERS = max(1, _mp.cpu_count())
+
+def _sim_worker_explorer(args):
+    origin_xy, batch, sigma, cur_cfg, cur_ms = args
+
+    best_ms = cur_ms; best_cfg = cur_cfg
+
+    for i in range(batch):
+        cand = []
+        for r in cur_cfg:
+            dx, dy = np.random.normal(0, sigma), np.random.normal(0, sigma)
+            cx, cy = clamp_disk(r[0]+dx, r[1]+dy)
+            cand.append(np.array([cx, cy]))
+        ms = makespan_exact(origin_xy, cand)
+        if ms > best_ms:
+            best_ms  = ms
+            best_cfg = cand
+    return best_ms, best_cfg
 
 def _sim_worker(args):
     """Évalue 'batch' configurations aléatoires et retourne la pire."""
@@ -37,24 +65,24 @@ def _sim_worker(args):
 # ── Export CSV ─────────────────────────────────────────────────────────────────
 def export_csv(robots : List[Tuple[float]], ms: float, mode_tag : str, n : int) -> str:
     """Sauvegarde la pire configuration trouvee dans un fichier CSV.
- 
+
     Cree le dossier ./output/ si necessaire, puis ecrit un fichier
     worst_{mode_tag}_n{n}.csv avec une ligne par robot. Le makespan
     est inscrit uniquement sur la premiere ligne (colonne "makespan").
- 
+
     Format du CSV :
         X, Y, makespan
         x1, y1, <makespan>
         x2, y2,
         ...
- 
+
     Args:
         robots:   Liste des positions np.ndarray ou (x, y) de la configuration.
         ms:       Makespan de la configuration (valeur a sauvegarder).
         mode_tag: Identifiant du mode ("simulation" ou "exploration"),
                   utilise dans le nom de fichier.
         n:        Nombre de robots, utilise dans le nom de fichier.
- 
+
     Returns:
         Nom du fichier cree (sans le chemin), par exemple
         "worst_simulation_n8.csv".
@@ -72,16 +100,16 @@ def export_csv(robots : List[Tuple[float]], ms: float, mode_tag : str, n : int) 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Dropdown maison
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 class DropDown:
-    MODES = ["Simulation", "Exploration"]
+    MODES = ["Simulation", "Exploration", "Heatmap"]
 
     def __init__(self, fig, rect, on_change):
         """Initialise le menu deroulant et l'insere dans la figure.
- 
+
         Cree un bouton principal affichant le mode courant, et des axes
         "option" caches qui s'affichent vers le haut lors du clic.
- 
+
         Args:
             fig:       Figure matplotlib dans laquelle inserer le widget.
             rect:      Position et taille [x, y, largeur, hauteur] en
@@ -120,12 +148,12 @@ class DropDown:
 
     def _click(self, ev):
         """Gere les clics souris sur le bouton principal et les options.
- 
+
         Ouvre ou ferme le menu si le clic est sur le bouton principal.
         Selectionne une option si le clic est sur un axe d'option visible,
         puis ferme le menu et appelle le callback on_change.
         Ferme le menu si le clic est en dehors.
- 
+
         Args:
             ev: Evenement matplotlib MouseEvent.
         """
@@ -142,7 +170,7 @@ class DropDown:
 
     def _refresh(self):
         """Met a jour la visibilite et la couleur des options du menu.
- 
+
         Affiche ou cache les axes d'option selon self._open,
         et met en evidence l'option actuellement selectionnee.
         Appelle draw_idle() pour rafraichir l'affichage.
@@ -176,6 +204,9 @@ class FreezeTagViz:
         self._ax_iter = None; self._txt_iter = None
         self._ax_run  = None; self._btn_run  = None
 
+        # Handle the features
+        self.heatmapui = None
+
         self._build()
         self._switch("Simulation")
         self._redraw()
@@ -183,14 +214,14 @@ class FreezeTagViz:
     # ── Mise en page ───────────────────────────────────────────────────────────
     def _build(self):
         """Construit la mise en page de la fenetre principale.
- 
+
         Cree et positionne tous les axes et widgets permanents :
         - ax       : zone de dessin du disque (gauche)
         - ax_info  : panneau de statistiques (droite)
         - Boutons  : Reset, +Robot, -Robot, Aleatoire, champ gravitationnel
         - Dropdown : selection du mode (Simulation / Exploration)
         - hint_txt : ligne de statut/feedback en bas de la zone de dessin
- 
+
         Les widgets dependant du mode (TextBox N= et bouton Run) sont crees
         separement dans _switch() car ils sont recrées a chaque changement
         de mode.
@@ -202,6 +233,9 @@ class FreezeTagViz:
         self.ax.set_facecolor("#0a0a18")
         self.ax_info = self.fig.add_axes([0.65, 0.18, 0.33, 0.76])
         self.ax_info.set_facecolor("#0a0a18"); self.ax_info.axis('off')
+
+        # For colobars
+        self.cax = self.fig.add_axes([0.56, 0.18, 0.05, 0.76])
 
         def mkbtn(attr, rect, lbl, col, hov, cb):
             ax  = self.fig.add_axes(rect)
@@ -223,13 +257,6 @@ class FreezeTagViz:
         self.dropdown = DropDown(self.fig, [0.84, 0.04, 0.14, 0.08],
                                  self._switch)
 
-        # Bouton champ gravitationnel — coin haut droit du disque principal
-        ax_grav = self.fig.add_axes([0.545, 0.91, 0.055, 0.055])
-        btn_grav = Button(ax_grav, "🌌", color="#0e1a2e", hovercolor="#1a3050")
-        btn_grav.label.set_fontsize(14)
-        btn_grav.on_clicked(self._open_gravity_window)
-        self._btn_grav = btn_grav
-
         self.hint_txt = self.fig.text(
             0.33, 0.14, "", color="#aaaacc", fontsize=8.5,
             ha='center', va='center')
@@ -240,11 +267,11 @@ class FreezeTagViz:
     # ── Switch mode ────────────────────────────────────────────────────────────
     def _switch(self, mode):
         """Change le mode actif (Simulation ou Exploration).
- 
+
         Detruit les widgets dependant du mode precedent (TextBox N= et
         bouton Run/Explorer) et les recrée avec les valeurs et callbacks
         appropries au nouveau mode. Appelle draw_idle() pour rafraichir.
- 
+
         Args:
             mode: Nom du mode cible, "Simulation" ou "Exploration".
         """
@@ -258,17 +285,17 @@ class FreezeTagViz:
 
         # Recréer selon le mode — N= et Run entre boutons fixes et dropdown
         ax_i = self.fig.add_axes([0.57, 0.04, 0.09, 0.08])
-        txt  = TextBox(ax_i, "N= ", initial="200" if mode=="Simulation" else "500",
+        txt  = TextBox(ax_i, "N= ", initial="200" if mode=="Simulation" else "500" if mode=="Heatmap" else "65536",
                        color="#12122a", hovercolor="#1e1e3a")
         txt.label.set_color("#aaaacc"); txt.label.set_fontsize(9)
         txt.text_disp.set_color("#eeeeff"); txt.text_disp.set_fontsize(10)
         self._ax_iter  = ax_i
         self._txt_iter = txt
 
-        lbl = "▶ Simuler" if mode == "Simulation" else "▶ Explorer"
-        col = "#2a1a4a"   if mode == "Simulation" else "#1a3a2a"
-        hov = "#4a2a7a"   if mode == "Simulation" else "#2a6a4a"
-        cb  = self._on_simulate if mode == "Simulation" else self._on_explore
+        lbl = "▶ Simuler" if mode == "Simulation" else "▶ Explorer" if mode == "Explorer" else "Heatmap"
+        col = "#2a1a4a"   if mode == "Simulation" else "#1a3a2a" if mode == "Explorer" else "#1a3a2b"
+        hov = "#4a2a7a"   if mode == "Simulation" else "#2a6a4a" if mode == "Explorer" else "#2a6a4b"
+        cb  = self._on_simulate if mode == "Simulation" else self._on_explore if mode == "Explorer" else self._on_heatmap
 
         ax_r = self.fig.add_axes([0.68, 0.04, 0.13, 0.08])
         btn  = Button(ax_r, lbl, color=col, hovercolor=hov)
@@ -277,12 +304,15 @@ class FreezeTagViz:
         self._ax_run  = ax_r
         self._btn_run = btn
 
+        # self.heatmapui = None
+        self.cax.set_visible(mode != "Heatmap")
+
         self.fig.canvas.draw_idle()
 
     # ── Dessin ─────────────────────────────────────────────────────────────────
     def _redraw(self):
         """Redessine completement la zone de dessin et le panneau info.
- 
+
         Efface les axes principaux puis trace dans l'ordre :
         - grille et axes cartesiens
         - cercle unite (reference geometrique)
@@ -308,7 +338,7 @@ class FreezeTagViz:
         ax.text(0.73, 0.73, "r=1", color="#3366bb", fontsize=7, alpha=0.6, zorder=3)
 
         # Arbre de réveil
-        if self.robots:
+        if self.robots and not self._drag_idx:
             for (p1,p2) in wake_tree(self.ORIGIN, self.robots):
                 ax.plot([p1[0],p2[0]], [p1[1],p2[1]],
                         color="#33dd99", linewidth=1.0, alpha=0.45, zorder=3)
@@ -344,6 +374,9 @@ class FreezeTagViz:
 
         self._draw_info()
 
+        if self._mode == "Heatmap" and self.heatmapui:
+            self.heatmapui.draw()
+
         # Hint
         if self.add_mode:
             self.hint_txt.set_text("Mode ajout — cliquez dans le disque")
@@ -363,13 +396,13 @@ class FreezeTagViz:
 
     def _draw_info(self):
         """Remplit le panneau de statistiques (axe de droite).
- 
+
         Affiche dans ax_info :
         - nombre de robots, makespan courant (exact ou greedy), methode
           utilisee, cible 1+2*sqrt(2), statut OK/KO
         - liste des positions de tous les robots (tronquee si > ~8)
         - bloc de resultat du mode courant (pire makespan trouve)
- 
+
         La couleur du makespan est verte si <= TARGET, rouge sinon.
         """
         ai = self.ax_info
@@ -440,18 +473,35 @@ class FreezeTagViz:
                     color=sc,fontsize=8,ha='right',fontweight='bold',
                     transform=ai.transAxes)
 
+    def _compute_heatmap(self):
+        n = len(self.robots)
+        if n == 0: self._warn("Ajoutez des robots avant de simuler"); return
+        nb = self._read_n()
+        if nb is None: return
+
+        pts      = list(map(tuple, self.robots))
+        heat_map = heat_map_from_robots(tuple(self.ORIGIN), pts, nb)
+
+        if not self.heatmapui:
+            self.heatmapui = HeatMapUIFeature(self.ax, self.cax)
+        self.heatmapui.update(heat_map)
+
+    def _on_heatmap(self, event):
+        self._compute_heatmap()
+        self._redraw()
+
     # ── Simulation (Monte-Carlo) ───────────────────────────────────────────────
     def _on_simulate(self, event):
         """Lance une simulation Monte-Carlo pour trouver la pire configuration.
- 
+
         Tire N configurations aleatoires de n robots dans le disque unite,
         calcule le makespan de chacune, et retient la pire. Si N >= 500
         et plusieurs coeurs sont disponibles, la simulation est parallelisee
         via multiprocessing.Pool avec un worker par coeur.
- 
+
         La pire configuration trouvee est affichee (cercles orange) et
         devient la configuration courante. Le resultat est exporte en CSV.
- 
+
         Args:
             event: Evenement matplotlib (non utilise, requis par l'API Button).
         """
@@ -511,7 +561,7 @@ class FreezeTagViz:
     # ── Exploration (hill-climbing local) ─────────────────────────────────────
     def _on_explore(self, event):
         """Lance un hill-climbing local pour maximiser le makespan.
- 
+
         Demarre depuis la configuration courante et applique N iterations
         de perturbation gaussienne. A chaque iteration, tous les robots
         sont deplaces d'un vecteur gaussien de variance sigma, puis clampes
@@ -519,9 +569,9 @@ class FreezeTagViz:
         makespan est >= au makespan courant (ascension de gradient bruitee).
         sigma decroit exponentiellement (x0.9998 par iteration) pour affiner
         la recherche locale au fil du temps.
- 
+
         La meilleure configuration trouvee est affichee et exportee en CSV.
- 
+
         Args:
             event: Evenement matplotlib (non utilise, requis par l'API Button).
         """
@@ -535,15 +585,16 @@ class FreezeTagViz:
         best_ms, best_cfg = cur_ms, [r.copy() for r in cur_cfg]
         sigma   = 0.08      # amplitude perturbation initiale
 
-        MIN_PAR = 300
+        MIN_PAR = 1e18
         use_par = (N_WORKERS > 1) and (nb >= MIN_PAR)
-        
+
         if use_par:
             n_workers  = N_WORKERS
             batch_size = max(100, nb // n_workers)
             batches    = [batch_size] * (n_workers - 1)
             batches.append(nb - batch_size * (n_workers - 1))
-            args = [(n, origin_xy, b) for b in batches]
+            origin_xy  = [0, 0]
+            args = [(origin_xy, b, sigma, cur_cfg, cur_ms) for b in batches]
 
             self.hint_txt.set_text(
                 f"Simulation… {nb} tirages sur {n_workers} cœurs")
@@ -551,32 +602,32 @@ class FreezeTagViz:
             self.fig.canvas.draw_idle(); self.fig.canvas.flush_events()
 
             with _mp.Pool(n_workers) as pool:
-                results = pool.map(_sim_worker, args)
+                results = pool.map(_sim_worker_explorer, args)
 
             best_ms, best_cfg_raw = max(results, key=lambda x: x[0])
             best_cfg = [np.array(list(r)) for r in best_cfg_raw]
             label = f"Simulation ({n_workers} cœurs)"
-        
 
-        for i in range(nb):
-            cand = []
-            for r in cur_cfg:
-                dx, dy = np.random.normal(0, sigma), np.random.normal(0, sigma)
-                cx, cy = clamp_disk(r[0]+dx, r[1]+dy)
-                cand.append(np.array([cx, cy]))
-            ms = compute_makespan(self.ORIGIN, cand)
-            # Hill-climbing vers le pire : on accepte si makespan ≥ actuel
-            if ms >= cur_ms:
-                cur_cfg, cur_ms = cand, ms
-                if ms > best_ms:
-                    best_ms, best_cfg = ms, [c.copy() for c in cand]
-            # Recuit léger pour ne pas rester coincé
-            sigma = max(0.008, sigma * 0.9998)
-            if (i+1)%100==0 or i==nb-1:
-                self.hint_txt.set_text(
-                    f"Exploration… {i+1}/{nb}  best={best_ms:.4f}  σ={sigma:.4f}")
-                self.hint_txt.set_color("#ffcc44")
-                self.fig.canvas.draw_idle(); self.fig.canvas.flush_events()
+        else:
+            for i in range(nb):
+                cand = []
+                for r in cur_cfg:
+                    dx, dy = np.random.normal(0, sigma), np.random.normal(0, sigma)
+                    cx, cy = clamp_disk(r[0]+dx, r[1]+dy)
+                    cand.append(np.array([cx, cy]))
+                ms = compute_makespan(self.ORIGIN, cand)
+                # Hill-climbing vers le pire : on accepte si makespan ≥ actuel
+                if ms >= cur_ms:
+                    cur_cfg, cur_ms = cand, ms
+                    if ms > best_ms:
+                        best_ms, best_cfg = ms, [c.copy() for c in cand]
+                # Recuit léger pour ne pas rester coincé
+                sigma = max(0.008, sigma * 0.9998)
+                if (i+1)%100==0 or i==nb-1:
+                    self.hint_txt.set_text(
+                        f"Exploration… {i+1}/{nb}  best={best_ms:.4f}  σ={sigma:.4f}")
+                    self.hint_txt.set_color("#ffcc44")
+                    self.fig.canvas.draw_idle(); self.fig.canvas.flush_events()
 
         self._exp_best_ms     = best_ms
         self._exp_best_robots = best_cfg
@@ -590,7 +641,7 @@ class FreezeTagViz:
     # ── Helpers ────────────────────────────────────────────────────────────────
     def _warn(self, msg):
         """Affiche un message d'avertissement dans la barre de statut.
- 
+
         Args:
             msg: Texte a afficher (typiquement prefixe par "⚠").
         """
@@ -599,7 +650,7 @@ class FreezeTagViz:
 
     def _read_n(self):
         """Lit et valide la valeur entiere saisie dans le champ TextBox "N=".
- 
+
         Returns:
             Entier strictement positif si la valeur est valide,
             None sinon (un avertissement est alors affiche).
@@ -614,10 +665,10 @@ class FreezeTagViz:
     # ── Boutons permanents ────────────────────────────────────────────────────
     def _on_reset(self, event):
         """Remet l'application dans son etat initial.
- 
+
         Vide la liste des robots, desactive le mode ajout, et efface
         les meilleurs resultats des modes Simulation et Exploration.
- 
+
         Args:
             event: Evenement matplotlib (non utilise, requis par l'API Button).
         """
@@ -628,10 +679,10 @@ class FreezeTagViz:
 
     def _on_add_toggle(self, event):
         """Active ou desactive le mode ajout de robots.
- 
+
         En mode ajout, le prochain clic dans le disque ajoute un robot
         a la position cliquee (si elle est dans le disque unite).
- 
+
         Args:
             event: Evenement matplotlib (non utilise, requis par l'API Button).
         """
@@ -639,7 +690,7 @@ class FreezeTagViz:
 
     def _on_remove_last(self, event):
         """Supprime le dernier robot ajoute.
- 
+
         Args:
             event: Evenement matplotlib (non utilise, requis par l'API Button).
         """
@@ -648,11 +699,11 @@ class FreezeTagViz:
 
     def _on_randomize(self, event):
         """Repositionne aleatoirement tous les robots dans le disque.
- 
+
         Conserve le nombre de robots existant mais tire de nouvelles
         positions independamment et uniformement dans le disque unite.
         Ne fait rien si la liste est vide.
- 
+
         Args:
             event: Evenement matplotlib (non utilise, requis par l'API Button).
         """
@@ -664,14 +715,14 @@ class FreezeTagViz:
     # ── Souris ────────────────────────────────────────────────────────────────
     def _pick(self, x, y):
         """Trouve l'indice du robot le plus proche d'un point donne.
- 
+
         Retourne l'indice uniquement si la distance est inferieure au seuil
         DTHR (0.07 unite), ce qui correspond au rayon de selection par clic.
- 
+
         Args:
             x: Abscisse du point cible (coordonnees du disque).
             y: Ordonnee du point cible (coordonnees du disque).
- 
+
         Returns:
             Indice dans self.robots du robot le plus proche si la distance
             est < DTHR, None sinon.
@@ -684,13 +735,13 @@ class FreezeTagViz:
 
     def _on_click(self, event):
         """Gere les clics souris dans la zone de dessin.
- 
+
         Comportement selon le mode :
         - Mode ajout actif : place un nouveau robot au point clique
           (si dans le disque), ou commence un drag si un robot existant
           est proche du clic.
         - Mode normal : commence un drag si un robot est proche du clic.
- 
+
         Args:
             event: Evenement matplotlib MouseEvent.
         """
@@ -710,41 +761,48 @@ class FreezeTagViz:
 
     def _on_drag(self, event):
         """Deplace le robot selectionne en suivant le curseur.
- 
+
         Appele a chaque mouvement souris. Si un robot est en cours de drag
         (self._drag_idx != None), met a jour sa position vers le curseur
         en la clampant dans le disque, puis redessine.
- 
+
         Args:
             event: Evenement matplotlib MouseEvent.
         """
-        if self._drag_idx is None or event.inaxes!=self.ax: return
+        if self._drag_idx is None or event.inaxes!=self.ax:
+            if self._mode == "Heatmap" and self.heatmapui:pass
+                # self.heatmapui.create_cursor_event_handler(self.robots).on_move(event)
+                # self._redraw()
+            return
         x,y = event.xdata, event.ydata
         if x is None: return
         x,y = clamp_disk(x,y)
         self.robots[self._drag_idx] = np.array([x,y])
-        self._redraw()
+        # self._redraw()
 
     def _on_release(self, event):
         """Termine le drag en cours et restaure le curseur normal.
- 
+
         Args:
             event: Evenement matplotlib MouseEvent.
         """
         if self._drag_idx is not None:
-            self._drag_idx = None; self.fig.canvas.set_cursor(1); self._redraw()
-
+            self._drag_idx = None
+            self.fig.canvas.set_cursor(1)
+            if self._mode == "Heatmap":
+                self._compute_heatmap()
+            self._redraw()
 
     # ── Fenêtre champ gravitationnel ──────────────────────────────────────────
     @staticmethod
     def _gravity_field(X, Y, robots, sigma=1.0):
         """Calcule le champ de potentiel gravitationnel sur une grille 2D.
- 
+
         Le champ est une somme de gaussiennes centrees sur chaque robot.
         Avec sigma=1, la gaussienne vaut exp(-2) ~ 0.13 a distance 2,
         ce qui garantit une influence couvrant tout le disque unite
         (diametre = 2).
- 
+
         Args:
             X:      Grille des abscisses, tableau numpy 2D (meshgrid).
             Y:      Grille des ordonnees, tableau numpy 2D (meshgrid).
@@ -752,7 +810,7 @@ class FreezeTagViz:
                     des robots (centres des gaussiennes).
             sigma:  Ecart-type des gaussiennes, controle le rayon d'action
                     (defaut : 1.0).
- 
+
         Returns:
             Tableau numpy 2D de meme forme que X et Y contenant la valeur
             du champ phi(x, y) = sum_i exp(-||p - p_i||^2 / (2*sigma^2)).
@@ -762,208 +820,6 @@ class FreezeTagViz:
             d2 = (X - rx)**2 + (Y - ry)**2
             Z += np.exp(-d2 / (2.0 * sigma**2))
         return Z
-
-    @staticmethod
-    def _gradient_at_origin(robots, sigma=1.0):
-        """Calcule le gradient du champ gravitationnel a l'origine (0, 0).
- 
-        Le gradient analytique de phi en (0,0) vaut :
-            d/dx phi(0,0) = sum_i (r_ix / sigma^2) * exp(-||p_i||^2 / 2*sigma^2)
-        Ce vecteur pointe dans la direction de la "masse" dominante,
-        c'est-a-dire vers le groupe de robots le plus influent vu de l'origine.
-        Il definit la direction naturelle du premier reveil pour p0,
-        et sa perpendiculaire est la droite de partage du plan.
- 
-        Args:
-            robots: Liste de paires (rx, ry) representant les positions
-                    des robots endormis.
-            sigma:  Ecart-type des gaussiennes (defaut : 1.0).
- 
-        Returns:
-            Tableau numpy de forme (2,) contenant le gradient (gx, gy).
-            Vecteur nul si tous les robots sont a l'origine.
-        """
-        gx, gy = 0., 0.
-        for rx, ry in robots:
-            d2 = rx**2 + ry**2
-            w  = np.exp(-d2 / (2.0 * sigma**2))
-            gx += (rx / sigma**2) * w
-            gy += (ry / sigma**2) + w
-        return np.array([gx, gy])
-
-    def _open_gravity_window(self, event=None):
-        """Ouvre une fenetre 3D interactive du champ gravitationnel.
- 
-        Cree une nouvelle figure matplotlib avec :
-        - ax3d   : surface 3D du champ phi(x,y) avec la flèche du gradient
-                   en jaune et la droite de partage en vert tracee sur la surface
-        - ax_top : vue de dessus (heatmap + contours + memes annotations)
-        - sl_sig : slider interactif controlant sigma en temps reel
- 
-        Le gradient en (0,0) est recalcule a chaque changement de sigma.
-        La droite de partage est la droite passant par l'origine et
-        perpendiculaire au gradient.
- 
-        Args:
-            event: Evenement matplotlib (non utilise, None par defaut).
-        """
-        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-        from matplotlib.widgets import Slider
-
-        robots = self.robots
-        if not robots:
-            self._warn("Aucun robot — ajoutez des robots d'abord.")
-            return
-
-        # ── Figure 3D dédiée ────────────────────────────────────────────────
-        gfig = plt.figure(figsize=(10, 8), facecolor="#06060f",
-                          num="Champ gravitationnel — Freeze Tag")
-        gfig.patch.set_facecolor("#06060f")
-
-        # Layout : surface 3D (grand) + slider sigma en bas
-        ax3d   = gfig.add_axes([0.05, 0.18, 0.60, 0.78], projection='3d')
-        ax_top = gfig.add_axes([0.68, 0.18, 0.30, 0.78])   # vue de dessus
-        ax_sig = gfig.add_axes([0.15, 0.06, 0.50, 0.04])    # slider sigma
-
-        ax3d.set_facecolor("#06060f")
-        ax_top.set_facecolor("#06060f")
-        for ax in (ax3d, ax_top):
-            ax.tick_params(colors="#aaaacc", labelsize=7)
-
-        # Grille de calcul
-        res = 120
-        xs  = np.linspace(-1.5, 1.5, res)
-        ys  = np.linspace(-1.5, 1.5, res)
-        X, Y = np.meshgrid(xs, ys)
-
-        # Masque disque (pour la vue top uniquement)
-        mask = X**2 + Y**2 <= 1.0
-
-        # Slider sigma
-        sl_sig = Slider(ax_sig, "σ", 0.1, 2.0, valinit=1.0,
-                        color="#2a2a6a", track_color="#12122a")
-        ax_sig.set_facecolor("#06060f")
-        sl_sig.label.set_color("#aaaacc"); sl_sig.valtext.set_color("#eeeeff")
-
-        state = {"surf": None, "quiv": None, "line3d": None,
-                 "cont": None, "arrow": None, "divline": None}
-
-        def redraw(sigma):
-            # ── calcul ──────────────────────────────────────────────────────
-            rxy = [(r[0], r[1]) for r in robots]
-            Z   = self._gravity_field(X, Y, rxy, sigma)
-
-            # Gradient en (0,0) = direction de plus grande montée
-            gx, gy = 0., 0.
-            for rx, ry in rxy:
-                d2 = rx**2 + ry**2
-                w  = math.exp(-d2 / (2.0 * sigma**2))
-                gx += (rx / sigma**2) * w
-                gy += (ry / sigma**2) * w
-            gnorm = math.hypot(gx, gy)
-            if gnorm > 1e-9:
-                gx /= gnorm; gy /= gnorm
-
-            # ── Surface 3D ──────────────────────────────────────────────────
-            ax3d.cla()
-            ax3d.set_facecolor("#06060f")
-            surf = ax3d.plot_surface(
-                X, Y, Z,
-                cmap="plasma", alpha=0.85,
-                linewidth=0, antialiased=True,
-                rcount=60, ccount=60
-            )
-            # Cercle unité sur le sol
-            theta = np.linspace(0, 2*math.pi, 200)
-            cx, cy = np.cos(theta), np.sin(theta)
-            ax3d.plot(cx, cy, np.zeros_like(cx),
-                      color="#4488ff", lw=1.2, ls='--', alpha=0.6)
-
-            # Robots : points rouges sur la surface
-            for rx, ry in rxy:
-                zr = self._gravity_field(
-                    np.array([[rx]]), np.array([[ry]]), rxy, sigma)[0, 0]
-                ax3d.scatter([rx], [ry], [zr],
-                             color="#ee5577", s=60, zorder=10)
-
-            # Flèche gradient depuis (0,0) → direction de plus grande montée
-            z0 = self._gravity_field(np.array([[0.]]), np.array([[0.]]),
-                                     rxy, sigma)[0, 0]
-            ax3d.quiver(0, 0, z0, gx*0.4, gy*0.4, 0,
-                        color="#ffdd00", linewidth=2.5,
-                        arrow_length_ratio=0.35)
-
-            # Droite de partage (perpendiculaire au gradient, passe par 0)
-            # direction perpendiculaire : (-gy, gx)
-            t  = np.linspace(-1.5, 1.5, 200)
-            lx = -gy * t; ly = gx * t
-            lz = self._gravity_field(
-                lx.reshape(1, -1), ly.reshape(1, -1), rxy, sigma)[0]
-            ax3d.plot(lx, ly, lz + 0.01,
-                      color="#00ffaa", lw=2, label="droite de partage")
-
-            ax3d.set_xlabel("x", color="#aaaacc", fontsize=8)
-            ax3d.set_ylabel("y", color="#aaaacc", fontsize=8)
-            ax3d.set_zlabel("φ(x,y)", color="#aaaacc", fontsize=8)
-            ax3d.set_title(f"Champ gravitationnel  σ={sigma:.2f}",
-                           color="#eeeeff", fontsize=9, pad=4)
-            ax3d.tick_params(colors="#888899", labelsize=6)
-
-            # ── Vue de dessus (heatmap + gradient + droite) ─────────────────
-            ax_top.cla()
-            ax_top.set_facecolor("#06060f")
-            Z_disk = np.where(mask, Z, np.nan)
-            ax_top.contourf(X, Y, Z_disk, levels=30, cmap="plasma", alpha=0.9)
-            ax_top.contour(X, Y, Z_disk,  levels=10,
-                           colors="#ffffff", linewidths=0.4, alpha=0.3)
-
-            # Cercle unité
-            ax_top.plot(cx, cy, color="#4488ff", lw=1.2, ls='--', alpha=0.7)
-
-            # Robots
-            for rx, ry in rxy:
-                ax_top.scatter(rx, ry, color="#ee5577", s=40, zorder=5)
-            ax_top.scatter(0, 0, color="#ffdd00", s=80, marker='*', zorder=6,
-                           label="p₀")
-
-            # Flèche gradient (direction de plus grande pente depuis 0)
-            ax_top.annotate("", xy=(gx*0.45, gy*0.45), xytext=(0, 0),
-                            arrowprops=dict(arrowstyle="->",
-                                           color="#ffdd00", lw=2.0))
-
-            # Droite de partage
-            t2   = np.linspace(-1.3, 1.3, 2)
-            ax_top.plot(-gy*t2, gx*t2, color="#00ffaa", lw=1.8,
-                        ls='--', label="partage")
-
-            # Annotations : label gradient + perpendiculaire
-            ax_top.text(gx*0.5 + 0.06, gy*0.5 + 0.06,
-                        "grad  " + f"{math.degrees(math.atan2(gy, gx)):.0f} deg",
-                        color="#ffdd00", fontsize=7.5, ha="left")
-
-            ax_top.set_xlim(-1.35, 1.35); ax_top.set_ylim(-1.35, 1.35)
-            ax_top.set_aspect("equal")
-            ax_top.set_title("Vue de dessus", color="#eeeeff", fontsize=9, pad=4)
-            ax_top.tick_params(colors="#888899", labelsize=6)
-            ax_top.legend(fontsize=7, loc="lower right",
-                          facecolor="#12122a", labelcolor="#eeeeff",
-                          framealpha=0.7)
-
-            gfig.canvas.draw_idle()
-
-        sl_sig.on_changed(redraw)
-        redraw(1.0)
-
-        # Légende fixe
-        gfig.text(0.05, 0.01,
-                  "Jaune : gradient grad_phi(0,0) = direction vers les robots lourds\n"
-                  "Vert  : droite de partage perpendiculaire (separe le plan en 2)",
-                  color="#aaaacc", fontsize=7.5, va='bottom')
-
-        gfig.canvas.manager.set_window_title(
-            "Champ gravitationnel — Freeze Tag")
-        plt.figure(gfig.number)
-        plt.show(block=False)
 
     def show(self): plt.show()
 
