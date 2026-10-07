@@ -17,7 +17,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from freeze_tag import solve, makespan_exact, dist, random_in_disk
 
-TARGET = 1 + 2 * math.sqrt(2)   # ≈ 3.8284
+TARGET = 1 + 2 * math.sqrt(2)   # 3.8284
 ORIGIN = (0.0, 0.0)
 TOL    = 1e-9
 
@@ -35,7 +35,7 @@ def makespan_from_edges(origin, edges):
         return 0.0
 
     # Construction du graphe orienté parent -> enfants
-    children = {}
+    children : dict[tuple[float, float], list[tuple[float, float]]] = {}
     for p1, p2 in edges:
         children.setdefault(p1, []).append(p2)
 
@@ -111,7 +111,7 @@ class TestMakespanExactAnalytique:
         ne fait rien (partition vide). Makespan = ε + sqrt(1+ε²).
         """
         eps      = 0.01
-        expected = eps + math.sqrt(1.0 + eps**2)
+        expected = eps + math.hypot(1.0, eps**2)
         ms, _    = solve(ORIGIN, [(1.0, 0.0), (0.0, eps)])
         assert ms == pytest.approx(expected, abs=TOL)
 
@@ -154,7 +154,7 @@ class TestMakespanExactCoherence:
             assert r in destinations, f"robot {r} absent de l'arbre"
 
     def test_nombre_aretes_egal_n(self):
-        """Un arbre couvrant n noeuds depuis p0 a exactement n arêtes."""
+        """Un arbre couvrant n noeuds et l'origine p0 a exactement n arêtes."""
         for n in range(1, 9):
             robots   = polygon_robots(n)
             _, edges = solve(ORIGIN, robots)
@@ -200,7 +200,7 @@ class TestMakespanExactCoherence:
             eveilles.add(p2)
 
 
-# ── Conjecture 1 + 2√2 ───────────────────────────────────────────────────────
+# ── Conjecture 1 + 2sqrt(2) ───────────────────────────────────────────────────────
 
 class TestConjecture:
     N_SAMPLES = 200
@@ -210,7 +210,7 @@ class TestConjecture:
     def test_conjecture_polygone_regulier(self, n):
         """
         Pour le polygone régulier à n sommets inscrit dans le disque,
-        le makespan doit être <= 1 + 2√2.
+        le makespan doit être <= 1 + 2sqrt(2).
         """
         robots = polygon_robots(n)
         ms, _  = solve(ORIGIN, robots)
@@ -222,7 +222,7 @@ class TestConjecture:
     def test_conjecture_aleatoire(self, n):
         """
         Sur N_SAMPLES configurations aléatoires de n robots dans le disque,
-        le makespan doit toujours être <= 1 + 2√2.
+        le makespan doit toujours être <= 1 + 2sqrt(2).
 
         Note : ce test n'est pas une preuve formelle (la conjecture est
         ouverte pour 8 <= n <= 280), mais il valide empiriquement le
